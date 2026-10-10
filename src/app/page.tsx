@@ -1,63 +1,17 @@
 import Link from "next/link";
-import Image from "next/image";
 import manifest from "@/data/fixture-manifest.json";
-import { UploadCard } from "@/components/UploadCard";
+import { IntakeQueue } from "@/components/IntakeQueue";
+import { Icon } from "@/components/Icon";
 
-export default function QueuePage() {
-  const fixtures = manifest.fixtures;
-  return (
-    <div className="mx-auto max-w-5xl px-4 py-8 lg:px-8">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold t-strong">Prescription Intake</h1>
-          <p className="mt-1 text-sm t-dim">
-            Incoming faxes awaiting extraction and pharmacist review. All examples are
-            synthetic.
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-6 overflow-hidden rounded-lg border bordered panel shadow-sm">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b bordered panel-muted text-left text-xs uppercase tracking-wide t-dim">
-              <th className="px-4 py-2.5">Fax</th>
-              <th className="px-4 py-2.5">Source ID</th>
-              <th className="px-4 py-2.5">Scenario</th>
-              <th className="px-4 py-2.5">Status</th>
-              <th className="px-4 py-2.5"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {fixtures.map((f) => (
-              <tr key={f.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60 dark:border-slate-800 dark:hover:bg-slate-800/40">
-                <td className="px-4 py-3">
-                  <div className="relative h-16 w-12 overflow-hidden rounded border bordered bg-white">
-                    <Image src={f.image} alt={`${f.id} preview`} fill className="object-cover object-top" />
-                  </div>
-                </td>
-                <td className="px-4 py-3 font-mono text-xs t-body">{f.id}</td>
-                <td className="px-4 py-3">
-                  <div className="font-medium t-strong">{f.title}</div>
-                  <div className="text-xs t-dim">{f.description}</div>
-                </td>
-                <td className="px-4 py-3">
-                  <span className="badge badge-ai">Not processed</span>
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <Link href={`/review/${f.id}`} className="btn btn-primary">
-                    Review
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="mt-6">
-        <UploadCard />
-      </div>
-    </div>
-  );
+export default function HomePage() {
+  return <div className="page-container fade-up">
+    <div className="page-heading"><div><p className="eyebrow">YOUR REVIEW WORKSPACE</p><h1>A little clarity. A better workflow.</h1><p>Turn incoming faxes into drafts you can confidently verify.</p></div></div>
+    <section className="welcome-banner">
+      <div className="welcome-copy"><span className="welcome-kicker"><span /> EVIDENCE-FIRST INTAKE</span><h2>From fax to facts.<br /><span>With you in control.</span></h2><p>Read the source. Resolve the uncertainty.<br />Give every prescription the review it deserves.</p><Link href="/queue" className="btn btn-banner">Start reviewing<Icon name="arrow" size={17} /></Link></div>
+      <div className="workflow-illustration" aria-hidden="true"><div className="illustration-orbit" /><div className="paper-preview"><div className="paper-cross">+</div><span className="paper-label">PRESCRIPTION</span><div className="paper-rule" /><div className="paper-lines"><i /><i /><i /><i /></div><span className="paper-rx">℞</span><div className="paper-highlight" /><div className="paper-lines short"><i /><i /></div></div><div className="verified-preview"><span className="verified-icon"><Icon name="check" size={17} /></span><div>Evidence in every field<small>Ready for your review</small></div></div><span className="floating-lens"><Icon name="lens" size={29} /></span></div>
+    </section>
+    <IntakeQueue faxes={manifest.fixtures.map(({ id, title, image, description }) => ({ id, title, image, description }))} compact />
+    <div className="principle-strip"><span><Icon name="file" size={17} />Source evidence for every field</span><span><Icon name="shield" size={17} />Unknown stays unknown</span><span><Icon name="check" size={17} />Human-confirmed export</span></div>
+    <p className="page-footnote">Built for careful review. Demo only — no prescription is transmitted, filled, or approved.</p>
+  </div>;
 }

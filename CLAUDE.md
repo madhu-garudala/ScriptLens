@@ -53,6 +53,19 @@ npm run fixtures         # regenerate synthetic fax PNGs (python3 + Pillow)
 - `src/components/ReviewWorkspace.tsx` — two-panel review UI, edit→confirm,
   audit log, export. `UploadCard.tsx` — attested synthetic upload.
 - `public/fixtures/` — 3 synthetic faxes (clean / ambiguous / conflict).
+- `src/lib/db.ts` + `src/app/api/reviews/[id]/route.ts` — saved reviews in
+  Supabase Postgres, schema `scriptlens`: `reviews` (one row per browser id +
+  fixture) and `extractions` (stored model result per fixture).
+  Fixtures only: uploads are never stored (invariant 5). Env: `SUPABASE_DB_HOST`,
+  `SUPABASE_DB_PORT`, `SUPABASE_DB_USER`, `SUPABASE_PASSWORD` (quote it in
+  `.env.local` if it contains `#`). `npm run db:setup` creates the table.
+- `docs/sample-faxes/` — 10 extra synthetic faxes (`npm run samples`), also
+  bundled in `public/fixtures/` and listed in the manifest without `expected`.
+- Stored extractions: `/api/analyze` returns the saved result for a bundled fax
+  (`cached: true`, labelled in the UI) unless `fresh=true`; "Re-run extraction"
+  always calls the model. `npm run cache:warm` refills the store. Never for uploads.
+- Review flow: each required field is still confirmed one at a time (Enter
+  confirms and advances). There is deliberately no "confirm all" (invariant 2).
 - `tests/validation.test.ts` — gate + validation behavior; extend, don't delete.
 
 ## Current status (as of 12:50 PM)

@@ -7,7 +7,7 @@ import type { RxNormCheck } from "./types";
  * clinical judgment, dose check, or statement about appropriateness.
  *
  * API: https://lillycoi.github.io/rxnav / https://rxnav.nlm.nih.gov/REST
- * approximateTerm returns candidate matches with a similarity score.
+ * approximateTerm returns ranked candidate concepts for a name.
  */
 export async function checkDrugName(name: string | null): Promise<RxNormCheck> {
   if (!name || !name.trim()) {
@@ -37,10 +37,21 @@ export async function checkDrugName(name: string | null): Promise<RxNormCheck> {
     const candidates = json.approximateGroup?.candidate ?? [];
     const best = candidates[0];
     const score = best?.score ? Number(best.score) : null;
-    if (best?.rxcui && score !== null && score >= 50) {
-      // Resolve the candidate's display name when absent.
-      let display = best.name ?? null;
+
+    // RxNav's score is an unbounded relevance number, not a 0-100 similarity, so
+    // it cannot be thresholded. A MATCH requires the transcribed name to equal an
+    // RxNorm name for the top concept exactly (ignoring case and spacing); a
+    // near-miss such as "Lisinopri" stays NO_MATCH with the closest candidate shown.
+    const norm = (v: string) => v.trim().toLowerCase().replace(/\s+/g, " ");
+    let display: string | null = null;
+    let exact = false;
+    if (best?.rxcui) {
+      const names = candidates
+        .filter((c) => c.rxcui === best.rxcui && c.name)
+        .map((c) => c.name as string);
+      display = names.find((n) => norm(n) === norm(query)) ?? names[0] ?? null;
       if (!display) {
+        // Some sources omit the name; resolve the concept's RxNorm name instead.
         try {
           const nameRes = await fetch(`${base}/rxcui/${best.rxcui}/property.json?propName=RxNorm%20Name`, {
             signal: AbortSignal.timeout(5000),
@@ -55,22 +66,25 @@ export async function checkDrugName(name: string | null): Promise<RxNormCheck> {
           /* name lookup is best-effort */
         }
       }
+      exact = display !== null && norm(display) === norm(query);
+    }
+    if (best?.rxcui && exact) {
       return {
         status: "MATCH",
         query,
-        bestMatch: display ?? `RxCUI ${best.rxcui}`,
+        bestMatch: display,
         rxcui: best.rxcui,
         score,
-        note: `Name matches an RxNorm concept (similarity ${score}). This verifies the drug name exists in federal nomenclature — not that it is appropriate for any patient.`,
+        note: "Name matches an RxNorm concept exactly. This verifies the drug name exists in federal nomenclature — not that it is appropriate for any patient.",
       };
     }
     return {
       status: "NO_MATCH",
       query,
-      bestMatch: best?.name ?? null,
+      bestMatch: display,
       rxcui: null,
       score,
-      note: "No confident RxNorm match. The transcribed name may be misread — pharmacist should verify against the original.",
+      note: "No exact RxNorm match. The transcribed name may be misread — pharmacist should verify against the original.",
     };
   } catch (e: unknown) {
     return {

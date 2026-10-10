@@ -5,6 +5,7 @@ import { extractFromImage, InferenceError, NICRRON_MODEL } from "@/lib/nicrron";
 import { checkDrugName } from "@/lib/rxnorm";
 import { validateExtraction } from "@/lib/validate";
 import { emitPrismTrace } from "@/lib/prism";
+import { dbPool, EXTRACTIONS_TABLE } from "@/lib/db";
 import type { AnalyzeResult } from "@/lib/types";
 import manifest from "@/data/fixture-manifest.json";
 
@@ -21,6 +22,44 @@ async function loadFixture(id: string): Promise<{ dataUrl: string } | null> {
   const file = path.join(process.cwd(), "public", "fixtures", `${id}.png`);
   const buf = await fs.readFile(file);
   return { dataUrl: `data:image/png;base64,${buf.toString("base64")}` };
+}
+
+/**
+ * Stored extractions for bundled fixtures. A stored result is a real earlier
+ * model output and is always labelled `cached` — never presented as a live read.
+ * Storage problems are non-fatal: we fall through to live inference.
+ */
+async function readStoredExtraction(id: string): Promise<AnalyzeResult | null> {
+  const pool = dbPool();
+  if (!pool) return null;
+  try {
+    const { rows } = await pool.query(
+      `select result, created_at from ${EXTRACTIONS_TABLE} where document_id = $1`,
+      [id],
+    );
+    if (!rows.length) return null;
+    return {
+      ...(rows[0].result as AnalyzeResult),
+      cached: true,
+      cachedAt: new Date(rows[0].created_at).toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function storeExtraction(id: string, result: AnalyzeResult): Promise<void> {
+  const pool = dbPool();
+  if (!pool) return;
+  try {
+    await pool.query(
+      `insert into ${EXTRACTIONS_TABLE} (document_id, result, created_at) values ($1, $2, now())
+       on conflict (document_id) do update set result = excluded.result, created_at = now()`,
+      [id, JSON.stringify(result)],
+    );
+  } catch {
+    /* non-fatal */
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -41,6 +80,10 @@ export async function POST(req: NextRequest) {
     }
     documentId = fixtureId;
     dataUrl = fx.dataUrl;
+    if (form.get("fresh") !== "true") {
+      const stored = await readStoredExtraction(fixtureId);
+      if (stored) return NextResponse.json(stored);
+    }
   } else if (file instanceof File) {
     if (form.get("syntheticAttested") !== "true") {
       return NextResponse.json(
@@ -110,6 +153,7 @@ export async function POST(req: NextRequest) {
       latencyMs,
       prismStatus: prism.status,
     };
+    if (FIXTURE_IDS.has(documentId)) await storeExtraction(documentId, result);
     return NextResponse.json(result);
   } catch (e: unknown) {
     const err =

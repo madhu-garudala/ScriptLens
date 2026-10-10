@@ -40,6 +40,9 @@ export type AnalyzeResult = {
   latencyMs: number;
   prismStatus: "RECEIVED" | "FAILED" | "NOT_CONFIGURED";
   error?: { code: string; message: string; safeToRetry: boolean };
+  /** True when this is a stored earlier extraction, not a model call made for this request. */
+  cached?: boolean;
+  cachedAt?: string;
 };
 
 export type ReviewEntry = {

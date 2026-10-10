@@ -6,3 +6,7 @@ node_modules/
 .DS_Store
 .vercel
 *.tsbuildinfo
+__pycache__/
+
+# Local-only env exports for Vercel import — never commit
+vercel-env-import.*

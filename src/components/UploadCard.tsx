@@ -2,80 +2,44 @@
 
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
+import { addUpload } from "@/lib/sessionUploads";
+import { Icon } from "./Icon";
 
-/**
- * Upload a synthetic fax. The file is kept in sessionStorage as a data URL
- * (demo-only, synthetic-only) so /review/upload can analyze + display it.
- */
 export function UploadCard() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [attested, setAttested] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  async function onFile(file: File) {
+  function onFile(file: File) {
     setErr(null);
-    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-      setErr("Use a PNG, JPEG, or WEBP image.");
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      setErr("File exceeds the 5 MB demo limit.");
-      return;
-    }
+    if (!attested) { setErr("Confirm that your image contains synthetic data before uploading."); return; }
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) { setErr("Please choose a PNG, JPEG, or WEBP image."); return; }
+    if (file.size > 5 * 1024 * 1024) { setErr("This file is too large. Choose an image smaller than 5 MB."); return; }
+    setBusy(true);
     const reader = new FileReader();
+    reader.onerror = () => { setBusy(false); setErr("This image could not be read. Please try another file."); };
     reader.onload = () => {
       try {
-        sessionStorage.setItem("scriptlens-upload", String(reader.result));
-        sessionStorage.setItem("scriptlens-upload-name", file.name);
-        router.push("/review/upload");
+        const upload = addUpload(file.name, String(reader.result));
+        router.push(`/review/upload?u=${upload.id}`);
       } catch {
-        setErr("Could not stage the file in this browser (storage full?).");
+        setBusy(false);
+        setErr("This tab has no room for another upload. Remove an earlier upload and try again.");
       }
     };
     reader.readAsDataURL(file);
   }
 
-  return (
-    <div className="rounded-lg border border-dashed border-slate-300 panel p-5 dark:border-slate-700">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div className="text-sm font-semibold t-strong">Upload a synthetic fax</div>
-          <label className="mt-2 flex items-start gap-2 text-xs t-body">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={attested}
-              onChange={(e) => setAttested(e.target.checked)}
-            />
-            <span>
-              This image is synthetic and contains <b>no real patient information</b>.
-            </span>
-          </label>
-          {err && <div className="mt-2 text-xs font-medium text-danger">{err}</div>}
-        </div>
-        <div>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void onFile(f);
-              e.currentTarget.value = "";
-            }}
-          />
-          <button
-            className="btn btn-ghost"
-            disabled={!attested}
-            onClick={() => inputRef.current?.click()}
-            title={attested ? "Choose an image" : "Confirm the synthetic-data attestation first"}
-          >
-            Choose image…
-          </button>
-        </div>
-      </div>
+  return <section className="upload-card">
+    <div className="upload-card-heading"><h2>Upload a document</h2><span className="badge badge-ai">Image files</span></div>
+    <label className={`attestation ${attested ? "checked" : ""}`}><input type="checkbox" checked={attested} onChange={(e) => setAttested(e.target.checked)} /><span>I confirm this is a synthetic image.<small>This document contains no real patient information.</small></span><Icon name="shield" size={21} /></label>
+    <div className={`dropzone ${dragging ? "dragging" : ""}`} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false); }} onDrop={(e) => { e.preventDefault(); setDragging(false); if (busy) return; if (e.dataTransfer.files.length > 1) { setErr("Please upload one image at a time."); return; } const file = e.dataTransfer.files[0]; if (file) onFile(file); }}>
+      <span className="upload-symbol"><Icon name="upload" size={30} /></span><h3>{busy ? "Opening your document…" : dragging ? "Drop your image here" : "A fresh perspective starts here"}</h3><p>Drag and drop your fax image, or choose a file.</p><input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" aria-label="Choose fax image" onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.currentTarget.value = ""; }} /><button className="btn btn-primary" disabled={!attested || busy} onClick={() => inputRef.current?.click()}><Icon name="upload" size={16} />{busy ? "Opening…" : "Choose image"}</button><small>PNG, JPG or WEBP · Up to 5 MB</small>{!attested && <span className="upload-hint">Confirm the synthetic-data checkbox above to get started.</span>}
     </div>
-  );
+    {err && <div className="upload-error" role="alert"><Icon name="alert" size={18} />{err}</div>}
+    <div className="upload-bottom"><Icon name="file" size={16} />You’ll preview the original before starting extraction.</div>
+  </section>;
 }

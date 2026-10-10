@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Icon } from "./Icon";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FIELD_LABELS,
   REQUIRED_FIELDS,
@@ -10,11 +11,29 @@ import {
 } from "@/lib/schema";
 import type { AnalyzeResult, AuditEvent, ReviewEntry } from "@/lib/types";
 import { activeCriticalIssues, canExportDraft } from "@/lib/validate";
+import { getUpload, listUploads, readUploadReview, writeUploadReview } from "@/lib/sessionUploads";
 
 type Props = {
   documentId: string;
   fixtureImage: string | null;
   fixtureTitle: string;
+};
+
+// Format examples only — shown as input hints, never filled in as values.
+const FIELD_EXAMPLES: Record<FieldKey, string> = {
+  patient_name: "Jordan Blake",
+  patient_dob: "06/02/1985",
+  medication_name: "Lisinopril",
+  strength: "10 mg",
+  form: "tablet",
+  dose: "1 tablet",
+  route: "by mouth",
+  frequency: "once daily",
+  duration: "10 days",
+  quantity: "30",
+  refills: "0",
+  prescriber_name: "Dr. Riley Chen",
+  prescriber_contact: "(555) 010-0199",
 };
 
 let auditSeq = 0;
@@ -39,23 +58,129 @@ export function ReviewWorkspace({ documentId, fixtureImage, fixtureTitle }: Prop
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [selected, setSelected] = useState<FieldKey | null>(null);
   const [editDraft, setEditDraft] = useState<string>("");
-  const [editing, setEditing] = useState(false);
+  const [uploadId, setUploadId] = useState<string | null>(null);
+  const [uploadKept, setUploadKept] = useState(true);
+  const uploadReadyRef = useRef(false);
   const [zoom, setZoom] = useState(1);
   const [showReliability, setShowReliability] = useState(false);
   const [showAudit, setShowAudit] = useState(false);
+  const [confirmRerun, setConfirmRerun] = useState(false);
   const [exported, setExported] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [voiceNote, setVoiceNote] = useState<string | null>(null);
   const voiceEnabled = process.env.NEXT_PUBLIC_VOICE_DEMO === "true";
+  // Saved-review storage. Bundled fixtures only — uploads are never persisted.
+  const [saveState, setSaveState] = useState<"loading" | "idle" | "saving" | "saved" | "error">(
+    isUpload ? "idle" : "loading",
+  );
+  const clientIdRef = useRef<string | null>(null);
+  const storageReadyRef = useRef(false);
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+
+  // Uploads live in this tab only: load the image, and any review already started on it.
+  useEffect(() => {
+    if (!isUpload) return;
+    const wanted = new URLSearchParams(window.location.search).get("u");
+    const upload = wanted ? getUpload(wanted) : listUploads().at(-1) ?? null;
+    if (upload) {
+      setImageSrc(upload.dataUrl);
+      setUploadName(upload.name);
+      setUploadId(upload.id);
+      const saved = readUploadReview(upload.id);
+      if (saved) {
+        for (const e of saved.audit) {
+          const n = Number(e.id.replace("evt-", ""));
+          if (Number.isFinite(n)) auditSeq = Math.max(auditSeq, n);
+        }
+        setResult(saved.result);
+        setReview(saved.review);
+        setAudit(saved.audit);
+        setExported(saved.exported);
+        setPhase("done");
+      }
+    }
+    uploadReadyRef.current = true;
+  }, [isUpload]);
 
   useEffect(() => {
-    if (isUpload) {
-      const d = sessionStorage.getItem("scriptlens-upload");
-      const n = sessionStorage.getItem("scriptlens-upload-name");
-      if (d) setImageSrc(d);
-      if (n) setUploadName(n);
-    }
-  }, [isUpload]);
+    if (!isUpload || !uploadId || !uploadReadyRef.current) return;
+    if (phase !== "done" || !result?.extraction) return;
+    setUploadKept(writeUploadReview(uploadId, { result, review, audit, exported }));
+  }, [isUpload, uploadId, phase, result, review, audit, exported]);
+
+  // Restore this browser's saved review for the fixture, if there is one.
+  useEffect(() => {
+    if (isUpload) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        let id = localStorage.getItem("scriptlens-client");
+        if (!id) {
+          id = crypto.randomUUID();
+          localStorage.setItem("scriptlens-client", id);
+        }
+        clientIdRef.current = id;
+        const res = await fetch(`/api/reviews/${documentId}`, {
+          headers: { "x-scriptlens-client": id },
+        });
+        if (cancelled) return;
+        if (res.status === 404) {
+          setSaveState("idle");
+        } else if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        } else {
+          const saved = (await res.json()) as {
+            result: AnalyzeResult;
+            review: Partial<Record<FieldKey, ReviewEntry>>;
+            audit: AuditEvent[];
+            exported: boolean;
+          };
+          // Don't overwrite an extraction the reviewer started while this was loading.
+          if (cancelled || phaseRef.current !== "idle") return;
+          for (const e of saved.audit) {
+            const n = Number(e.id.replace("evt-", ""));
+            if (Number.isFinite(n)) auditSeq = Math.max(auditSeq, n);
+          }
+          setResult(saved.result);
+          setReview(saved.review);
+          setAudit(saved.audit);
+          setExported(saved.exported);
+          setPhase("done");
+          setSaveState("saved");
+        }
+      } catch {
+        if (!cancelled) setSaveState("error");
+      } finally {
+        storageReadyRef.current = true;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId, isUpload]);
+
+  // Save after every change to a completed extraction.
+  useEffect(() => {
+    if (isUpload || !storageReadyRef.current || !clientIdRef.current) return;
+    if (phase !== "done" || !result?.extraction) return;
+    const clientId = clientIdRef.current;
+    setSaveState("saving");
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/reviews/${documentId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-scriptlens-client": clientId },
+          body: JSON.stringify({ result, review, audit, exported }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setSaveState("saved");
+      } catch {
+        setSaveState("error");
+      }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [documentId, isUpload, phase, result, review, audit, exported]);
 
   const log = useCallback(
     (e: Omit<AuditEvent, "id" | "documentId" | "at">) => {
@@ -67,7 +192,7 @@ export function ReviewWorkspace({ documentId, fixtureImage, fixtureTitle }: Prop
     [documentId],
   );
 
-  const runExtraction = useCallback(async () => {
+  const runExtraction = useCallback(async (fresh = false) => {
     setPhase("running");
     setResult(null);
     setReview({});
@@ -76,12 +201,13 @@ export function ReviewWorkspace({ documentId, fixtureImage, fixtureTitle }: Prop
     try {
       const fd = new FormData();
       if (isUpload) {
-        const d = sessionStorage.getItem("scriptlens-upload");
-        if (!d) throw new Error("No staged upload found. Go back and choose an image.");
-        fd.set("file", dataUrlToFile(d, uploadName));
+        if (!imageSrc) throw new Error("No staged upload found. Go back and choose an image.");
+        fd.set("file", dataUrlToFile(imageSrc, uploadName));
         fd.set("syntheticAttested", "true");
       } else {
         fd.set("fixtureId", documentId);
+        // A re-run always asks the model again instead of using the stored extraction.
+        if (fresh) fd.set("fresh", "true");
       }
       const res = await fetch("/api/analyze", { method: "POST", body: fd });
       const json = (await res.json()) as AnalyzeResult;
@@ -125,7 +251,7 @@ export function ReviewWorkspace({ documentId, fixtureImage, fixtureTitle }: Prop
         },
       });
     }
-  }, [documentId, isUpload, uploadName, log]);
+  }, [documentId, isUpload, uploadName, imageSrc, log]);
 
   const fieldsByKey = useMemo(() => {
     const m = new Map<FieldKey, ExtractedField>();
@@ -137,49 +263,103 @@ export function ReviewWorkspace({ documentId, fixtureImage, fixtureTitle }: Prop
   const activeCrit = useMemo(() => activeCriticalIssues(issues, review), [issues, review]);
   const gate = useMemo(() => canExportDraft(issues, review), [issues, review]);
 
+  const requiredDone = REQUIRED_FIELDS.filter(
+    (k) => review[k]?.reviewed && review[k]?.currentValue?.trim(),
+  ).length;
+
+  const requiredLeft = REQUIRED_FIELDS.length - requiredDone;
+  const exportLocked = !gate.ok && phase === "done" && result?.status === "NEEDS_REVIEW";
+
   const selectedField = selected ? fieldsByKey.get(selected) ?? null : null;
   const selectedReview = selected ? review[selected] ?? null : null;
   const selectedIssues = issues.filter((i) => i.field === selected);
 
-  function startEdit() {
-    if (!selected || !selectedReview) return;
-    setEditDraft(selectedReview.currentValue ?? "");
-    setEditing(true);
+  function selectField(key: FieldKey) {
+    setSelected(key);
+    // The value is always editable in place; start from what is currently recorded.
+    setEditDraft(review[key]?.currentValue ?? "");
+    // Bring the editing controls into view without moving the source on desktop.
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>("#field-editor")
+        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
   }
 
-  function saveCorrection() {
-    if (!selected || !selectedReview) return;
+  const draftValue = editDraft.trim();
+  const draftChanged = !!selectedReview && draftValue !== (selectedReview.currentValue ?? "");
+  const confirmedUnchanged = !!selectedReview?.reviewed && !draftChanged;
+  const canConfirm = !!draftValue && !confirmedUnchanged;
+
+  /**
+   * One explicit human action: record the value in the box (if the reviewer
+   * changed it) and confirm it against the fax. Never fires without a value.
+   */
+  function confirmField() {
+    if (!selected || !selectedReview || !canConfirm) return;
     const before = selectedReview.currentValue;
-    const after = editDraft.trim() || null;
     setReview((r) => ({
       ...r,
       [selected]: {
         ...selectedReview,
-        currentValue: after,
-        correctedByHuman: after !== selectedReview.aiValue,
-        reviewed: false, // a new value invalidates any earlier confirmation
+        currentValue: draftValue,
+        correctedByHuman: draftChanged
+          ? draftValue !== selectedReview.aiValue
+          : selectedReview.correctedByHuman,
+        reviewed: true,
+        reviewedAt: new Date().toISOString(),
       },
     }));
-    setEditing(false);
-    setExported(false);
-    log({ actor: "DEMO_PHARMACIST", action: "EDIT", field: selected, before, after });
-  }
-
-  function confirmField() {
-    if (!selected || !selectedReview) return;
-    if (!selectedReview.currentValue?.trim()) return;
-    setReview((r) => ({
-      ...r,
-      [selected]: { ...selectedReview, reviewed: true, reviewedAt: new Date().toISOString() },
-    }));
+    if (draftChanged) {
+      setExported(false);
+      log({ actor: "DEMO_PHARMACIST", action: "EDIT", field: selected, before, after: draftValue });
+    }
     log({
       actor: "DEMO_PHARMACIST",
       action: "CONFIRM",
       field: selected,
-      after: selectedReview.currentValue,
+      after: draftValue,
       reason: "Confirmed against original fax",
     });
+    // Move on to the next required field that still needs a person's confirmation.
+    const order = result?.extraction?.fields.map((f) => f.key) ?? [];
+    const at = order.indexOf(selected);
+    const next = [...order.slice(at + 1), ...order.slice(0, at)].find(
+      (k) => REQUIRED_FIELDS.includes(k) && !review[k]?.reviewed,
+    );
+    if (next) selectField(next);
   }
+
+  /** Optional fields only: remove a value that is not on the fax. */
+  function clearValue() {
+    if (!selected || !selectedReview?.currentValue || REQUIRED_FIELDS.includes(selected)) return;
+    const before = selectedReview.currentValue;
+    setReview((r) => ({
+      ...r,
+      [selected]: {
+        ...selectedReview,
+        currentValue: null,
+        correctedByHuman: selectedReview.aiValue !== null,
+        reviewed: false,
+      },
+    }));
+    setEditDraft("");
+    setExported(false);
+    log({ actor: "DEMO_PHARMACIST", action: "EDIT", field: selected, before, after: null });
+  }
+
+  // Enter confirms the selected field (each field is still confirmed one at a time).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Enter" || !selected) return;
+      const t = e.target as HTMLElement | null;
+      if (t && t !== document.body && !t.closest?.("[data-field]")) return;
+      e.preventDefault();
+      confirmField();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   async function playVerificationCall() {
     if (!selected || !selectedField) return;
@@ -271,366 +451,65 @@ export function ReviewWorkspace({ documentId, fixtureImage, fixtureTitle }: Prop
     return <span className="badge badge-ai">AI extracted</span>;
   };
 
+  const fieldGroups: { title: string; keys: FieldKey[] }[] = [
+    { title: "Patient details", keys: ["patient_name", "patient_dob"] },
+    { title: "Prescription", keys: ["medication_name", "strength", "form", "dose", "route", "frequency", "duration", "quantity", "refills"] },
+    { title: "Prescriber", keys: ["prescriber_name", "prescriber_contact"] },
+  ];
+
   return (
-    <div className="flex h-[calc(100vh-49px)] min-h-0 flex-col">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-3 border-b bordered panel px-4 py-2.5 lg:px-6">
-        <Link href="/" className="text-sm t-dim hover:text-slate-800 dark:hover:text-slate-100">
-          ← Intake
-        </Link>
-        <div className="font-mono text-xs t-dim">{documentId}</div>
-        <div className="text-sm font-semibold t-strong">{fixtureTitle}</div>
-        <div className="ml-auto flex items-center gap-2">
-          {phase === "done" && result && (
-            <button className="btn btn-ghost" onClick={() => setShowReliability((v) => !v)}>
-              Trust &amp; evaluation
-            </button>
-          )}
-          <button
-            className="btn btn-primary"
-            onClick={() => void runExtraction()}
-            disabled={phase === "running" || !imageSrc}
-          >
-            {phase === "running"
-              ? "Reading fax…"
-              : phase === "idle"
-                ? "Run extraction"
-                : "Re-run extraction"}
-          </button>
+    <div className="review-workspace fade-up">
+      <div className="review-toolbar">
+        <div><div className="review-breadcrumb"><Link href={isUpload ? "/upload" : "/queue"}>{isUpload ? "Your uploads" : "Intake queue"}</Link><Icon name="chevron" size={12} /><span>Document review</span></div><h1>{isUpload ? uploadName : fixtureTitle}</h1></div>
+        <div className="flex flex-wrap items-center gap-2">
+          {phase === "done" && result && <button className="btn btn-ghost" aria-expanded={showReliability} onClick={() => setShowReliability((v) => !v)}><Icon name="shield" size={15} />Extraction details</button>}
+          <button className="btn btn-primary" onClick={() => { if (phase === "done") setConfirmRerun(true); else void runExtraction(phase !== "idle"); }} disabled={phase === "running" || !imageSrc}><Icon name="spark" size={15} />{phase === "running" ? "Reading fax…" : phase === "idle" ? "Run extraction" : phase === "failed" ? "Retry extraction" : "Re-run extraction"}</button>
         </div>
       </div>
 
-      {/* Reliability drawer */}
-      {showReliability && result && (
-        <div className="border-b bordered panel-muted px-4 py-3 text-xs lg:px-6">
-          <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <span className="t-dim">Inference · </span>
-              <span className="font-medium">Nicrron — {result.model}</span>
-            </div>
-            <div>
-              <span className="t-dim">Latency · </span>
-              <span className="font-medium">
-                {result.latencyMs > 0 ? `${(result.latencyMs / 1000).toFixed(1)}s` : "—"}
-              </span>
-            </div>
-            <div>
-              <span className="t-dim">PRISM trace · </span>
-              <span
-                className={
-                  result.prismStatus === "RECEIVED"
-                    ? "font-medium text-teal"
-                    : "font-medium text-amber"
-                }
-              >
-                {result.prismStatus}
-              </span>
-            </div>
-            <div>
-              <span className="t-dim">RxNorm check · </span>
-              <span className="font-medium">
-                {result.rxnorm ? result.rxnorm.status : "—"}
-              </span>
-            </div>
-          </div>
-          {result.rxnorm && (
-            <p className="mt-1.5 max-w-3xl t-dim">{result.rxnorm.note}</p>
-          )}
-          <p className="mt-1.5 max-w-3xl t-faint">
-            Deterministic validation runs in application code, independent of the model.
-            Traces carry sanitized metadata only — never the image or patient text.
-          </p>
-        </div>
-      )}
+      {confirmRerun && <div className="review-callout" role="alert"><strong>Start a new extraction?</strong><p>This replaces the current extracted values and field confirmations with a fresh read.</p><div className="mt-3 flex gap-2"><button className="btn btn-primary" onClick={() => { setConfirmRerun(false); void runExtraction(true); }}>Re-run extraction</button><button className="btn btn-ghost" onClick={() => setConfirmRerun(false)}>Keep current review</button></div></div>}
 
-      <div className="flex min-h-0 flex-1">
-        {/* Fax panel */}
-        <div className="flex min-w-0 flex-1 flex-col border-r bordered bg-slate-100 dark:bg-slate-900/60">
-          <div className="flex items-center justify-between border-b bordered panel px-4 py-2 text-xs t-dim">
-            <span>Incoming fax {isUpload ? `· ${uploadName}` : ""}</span>
-            <span className="flex items-center gap-1.5">
-              <button className="btn btn-ghost !px-2 !py-0.5" onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}>−</button>
-              <span className="w-10 text-center">{Math.round(zoom * 100)}%</span>
-              <button className="btn btn-ghost !px-2 !py-0.5" onClick={() => setZoom((z) => Math.min(3, z + 0.25))}>+</button>
-            </span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="review-steps" aria-label="Review progress">
+        <div className="review-step active"><span><Icon name="check" size={12} /></span>Document ready</div><Icon name="chevron" size={13} /><div className={`review-step ${phase === "done" ? "active" : ""}`}><span>{phase === "done" ? <Icon name="check" size={12} /> : "2"}</span>Extract &amp; review</div><Icon name="chevron" size={13} /><div className={`review-step ${exported ? "active" : ""}`}><span>{exported ? <Icon name="check" size={12} /> : "3"}</span>Export draft</div>
+      </div>
+
+      {showReliability && result && <section className="trust-panel" aria-label="Extraction details"><div className="trust-grid"><div><span className="eyebrow">Model</span><strong>{result.model}</strong></div><div><span className="eyebrow">Extraction time</span><strong>{result.latencyMs > 0 ? `${(result.latencyMs / 1000).toFixed(1)}s` : "—"}</strong></div><div><span className="eyebrow">PRISM trace</span><strong>{result.prismStatus}</strong></div><div><span className="eyebrow">RxNorm name check</span><strong>{result.rxnorm?.status ?? "—"}</strong></div></div>{result.rxnorm && <p>{result.rxnorm.note}</p>}{result.cached && <p>Stored extraction from {result.cachedAt ? new Date(result.cachedAt).toLocaleString() : "an earlier run"}. Timing and trace status refer to that run. Re-run extraction for a fresh read.</p>}<p>Drug-name matching is not a clinical approval. Source quotations are proposed by the model and must be checked against the original.</p></section>}
+
+      <div className="review-grid">
+        <section className="source-panel" aria-label="Original fax">
+          <div className="panel-heading"><h2><Icon name="file" size={16} />Original document</h2><div className="flex items-center gap-1"><button className="btn btn-ghost h-7 w-7 !min-h-0 !p-0" aria-label="Zoom out" disabled={zoom <= .5} onClick={() => setZoom((z) => Math.max(.5, z - .25))}>−</button><button className="px-2 text-[10px] t-dim" onClick={() => setZoom(1)} title="Reset zoom" aria-label="Reset zoom to 100 percent">{Math.round(zoom * 100)}%</button><button className="btn btn-ghost h-7 w-7 !min-h-0 !p-0" aria-label="Zoom in" disabled={zoom >= 3} onClick={() => setZoom((z) => Math.min(3, z + .25))}>+</button></div></div>
+          <div className="fax-stage">
             {imageSrc ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={imageSrc}
-                alt="Synthetic prescription fax"
-                style={{ width: `${zoom * 100}%` }}
-                className="mx-auto max-w-none rounded border border-slate-300 bg-white shadow-sm dark:border-slate-600"
-              />
-            ) : (
-              <div className="p-8 text-center text-sm t-dim">
-                No staged image. Go back to the queue and upload one.
-              </div>
-            )}
+              <img src={imageSrc} alt="Original synthetic prescription fax" style={{ width: `${zoom * 100}%` }} />
+            ) : <div className="empty-state"><Icon name="file" size={28} /><h3>No image available</h3><p>This upload may have expired when its browser tab closed.</p><Link href="/upload" className="btn btn-primary">Choose an image</Link></div>}
           </div>
-          {/* Evidence strip */}
-          <div className="border-t bordered panel px-4 py-3">
-            <div className="text-[11px] font-semibold uppercase tracking-wide t-faint">
-              Selected evidence
-            </div>
-            {selectedField ? (
-              <div className="mt-1 text-sm">
-                {selectedField.sourceText ? (
-                  <>
-                    <span className="rounded bg-amber-soft px-1.5 py-0.5 font-mono text-[13px] text-slate-800 dark:bg-amber-900/50 dark:text-amber-100">
-                      “{selectedField.sourceText}”
-                    </span>
-                    <span className="ml-2 text-xs t-faint">
-                      AI-cited text — verify against the original above
-                    </span>
-                  </>
-                ) : (
-                  <span className="text-xs t-dim">
-                    No reliable quotation available for {selected && FIELD_LABELS[selected]} —
-                    inspect the fax directly.
-                  </span>
-                )}
-                {selectedField.uncertaintyReason && (
-                  <div className="mt-1 text-xs text-amber dark:text-amber-400">{selectedField.uncertaintyReason}</div>
-                )}
-              </div>
-            ) : (
-              <div className="mt-1 text-xs t-faint">
-                Select a field on the right to see what the model read.
-              </div>
-            )}
-          </div>
-        </div>
+          <div className="evidence-panel" aria-live="polite"><div className="eyebrow">SOURCE EVIDENCE {selected ? `· ${FIELD_LABELS[selected]}` : ""}</div>{selectedField ? <>{selectedField.sourceText ? <blockquote>“{selectedField.sourceText}”</blockquote> : <p>No reliable quotation is available. Check the original image.</p>}<p>AI-cited text. Verify against the original document above.</p>{selectedField.uncertaintyReason && <p className="!text-amber dark:!text-amber-300">{selectedField.uncertaintyReason}</p>}</> : <p>Select a draft field to see the source text cited by the model.</p>}</div>
+        </section>
 
-        {/* Draft order panel */}
-        <div className="flex w-[30rem] shrink-0 flex-col panel">
-          <div className="flex items-center justify-between border-b bordered px-4 py-2.5">
-            <div className="text-sm font-semibold t-strong">Draft order</div>
-            {phase === "done" && (
-              <span
-                className={`badge ${activeCrit.length ? "badge-review" : "badge-confirmed"}`}
-              >
-                {activeCrit.length
-                  ? `Needs review · ${activeCrit.length} critical`
-                  : "Ready for export gate"}
-              </span>
-            )}
-          </div>
+        <section className="draft-panel" aria-label="Draft order">
+          <div className="panel-heading"><h2><Icon name="lens" size={16} />Draft order</h2>{phase === "done" && result?.status === "NEEDS_REVIEW" ? <span className={`badge ${gate.ok ? "badge-confirmed" : "badge-review"}`}>{gate.ok ? "Ready to export" : "Review required"}</span> : <span className="badge badge-ai">{phase === "running" ? "Extracting" : phase === "failed" ? "Extraction failed" : result?.status === "UNSUPPORTED" ? "Unsupported" : "Awaiting extraction"}</span>}</div>
 
-          <div className="min-h-0 flex-1 overflow-auto">
-            {phase === "idle" && (
-              <div className="p-6 text-sm t-dim">
-                Run extraction to read this fax with the Nicrron vision model. Nothing is
-                extracted, stored, or sent until you do.
-              </div>
-            )}
-            {phase === "running" && (
-              <div className="space-y-2 p-6">
-                {[...Array(7)].map((_, i) => (
-                  <div key={i} className="pulse-soft h-9 rounded bg-slate-100 dark:bg-slate-800" />
-                ))}
-              </div>
-            )}
-            {phase === "failed" && result?.error && (
-              <div className="m-4 rounded-md border callout-danger p-4 text-sm">
-                <div className="font-semibold text-danger dark:text-red-300">
-                  Could not extract ({result.error.code})
-                </div>
-                <p className="mt-1 t-body">{result.error.message}</p>
-                <p className="mt-2 text-xs t-dim">
-                  No fields were fabricated. {result.error.safeToRetry ? "You can retry, or review manually from the original." : "Fix the input and try again."}
-                </p>
-              </div>
-            )}
+          {phase === "idle" && <div className="empty-state !py-16"><span className="empty-icon"><Icon name="spark" size={25} /></span><h3>Let’s bring the details into focus.</h3><p>Extract the fields from this fax, then check each value alongside the original. You make the final confirmation.</p><button className="btn btn-primary" onClick={() => void runExtraction()} disabled={!imageSrc}><Icon name="spark" size={16} />Run extraction</button></div>}
+          {phase === "running" && <div className="p-6" role="status"><p className="mb-2 text-sm font-medium t-strong">Reading your document…</p><p className="mb-6 text-xs t-dim">Extracting fields and checking for uncertainty.</p>{Array.from({ length: 7 }, (_, i) => <div key={i} className="pulse-soft mb-3 h-12 rounded-lg panel-muted" style={{ animationDelay: `${i * 90}ms` }} />)}</div>}
+          {phase === "failed" && <div className="empty-state" role="alert"><span className="empty-icon"><Icon name="alert" size={25} /></span><h3>We couldn’t read this document.</h3><p>{result?.error?.message ?? "Extraction did not return a usable draft."}</p><button className="btn btn-ghost" disabled={!imageSrc} onClick={() => void runExtraction(true)}>Try extraction again</button><p>No draft values have been filled in.</p></div>}
+          {phase === "done" && result?.status === "UNSUPPORTED" && <div className="empty-state"><span className="empty-icon"><Icon name="file" size={25} /></span><h3>This isn’t a prescription.</h3><p>No draft order can be prepared from this document. You can return to the queue to review another fax.</p><Link href={isUpload ? "/upload" : "/queue"} className="btn btn-ghost">Back to {isUpload ? "uploads" : "queue"}<Icon name="arrow" size={15} /></Link></div>}
 
-            {phase === "done" && result?.status === "UNSUPPORTED" && (
-              <div className="m-4 rounded-md border callout-amber p-4 text-sm">
-                <div className="font-semibold text-amber dark:text-amber-300">Not identified as a prescription</div>
-                <p className="mt-1 t-body">
-                  No draft order can be prepared from this document.
-                </p>
-              </div>
-            )}
+          {phase === "done" && result?.extraction && result.status === "NEEDS_REVIEW" && <>
+            <div className="review-progress"><div><span>Required fields confirmed</span><strong>{requiredDone} / {REQUIRED_FIELDS.length}</strong></div><div className="progress-track" role="progressbar" aria-label="Required fields confirmed" aria-valuenow={requiredDone} aria-valuemin={0} aria-valuemax={REQUIRED_FIELDS.length}><span style={{ width: `${requiredDone / REQUIRED_FIELDS.length * 100}%` }} /></div></div>
+            {activeCrit.length > 0 && <details className="review-callout"><summary className="cursor-pointer font-semibold">{activeCrit.length} issue{activeCrit.length > 1 ? "s" : ""} need attention before export</summary><ul>{activeCrit.map((issue) => <li key={issue.id}>{issue.message}{issue.field && <button className="ml-2 font-semibold underline" onClick={() => selectField(issue.field!)}>Review field</button>}</li>)}</ul></details>}
+            {fieldGroups.map((group) => <div className="field-group" key={group.title}><h3>{group.title}</h3>{group.keys.map((key) => {
+              const f = fieldsByKey.get(key);
+              if (!f) return null;
+              const r = review[key];
+              return <button key={key} data-field={key} className={`field-row ${selected === key ? "selected" : ""}`} onClick={() => selectField(key)} aria-pressed={selected === key}><span className="min-w-0"><span className="field-label">{FIELD_LABELS[key]}{REQUIRED_FIELDS.includes(key) && <span className="ml-1" aria-label="required">*</span>}</span><span className="field-value">{r?.currentValue || <span className="font-normal italic t-faint">Not available</span>}</span></span>{statusBadge(f, r)}</button>;
+            })}</div>)}
 
-            {phase === "done" && result?.extraction && result.status === "NEEDS_REVIEW" && (
-              <>
-                {activeCrit.length > 0 && (
-                  <div className="m-4 rounded-md border callout-amber p-3 text-xs t-body">
-                    <div className="font-semibold text-amber dark:text-amber-300">
-                      {activeCrit.length} issue{activeCrit.length > 1 ? "s" : ""} blocking export
-                    </div>
-                    <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                      {activeCrit.slice(0, 4).map((i) => (
-                        <li key={i.id}>{i.message}</li>
-                      ))}
-                      {activeCrit.length > 4 && <li>…and {activeCrit.length - 4} more</li>}
-                    </ul>
-                  </div>
-                )}
+            {selected && selectedField && selectedReview ? <section className="field-editor" id="field-editor" aria-label="Confirm selected field"><h3>{FIELD_LABELS[selected]}</h3>{selectedField.sourceText && <p>Source text: “{selectedField.sourceText}”</p>}{selectedIssues.length > 0 && <ul className="mt-2 space-y-2 text-[10px] leading-relaxed text-amber dark:text-amber-300">{selectedIssues.map((issue) => <li key={issue.id}>{issue.message}{issue.evidence?.map((e, i) => <span className="block" key={i}>“{e}”</span>)}</li>)}</ul>}<label htmlFor="field-value">Check against the original, then confirm</label><input id="field-value" key={selected} value={editDraft} onChange={(e) => setEditDraft(e.target.value)} aria-label={`${FIELD_LABELS[selected]} value`} placeholder={`Enter the value shown on the fax, e.g. ${FIELD_EXAMPLES[selected]}`} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); confirmField(); } }} /><button className="btn btn-primary" onClick={confirmField} disabled={!canConfirm}><Icon name="check" size={16} />{confirmedUnchanged ? "Confirmed against fax" : "Confirm matches fax"}</button><p>Confirm only what you can verify. Enter confirms and moves to the next required field.</p><div className="mt-2 flex flex-wrap gap-3 text-[10px]">{!REQUIRED_FIELDS.includes(selected) && selectedReview.currentValue && <button className="text-link !text-[10px]" onClick={clearValue}>Clear optional value</button>}{voiceEnabled && selectedIssues.some((i) => i.severity === "CRITICAL") && <button className="text-link !text-[10px]" onClick={() => void playVerificationCall()} disabled={voiceBusy}>{voiceBusy ? "Preparing…" : "Play verification script"}</button>}</div>{voiceNote && <p role="status">{voiceNote}</p>}</section> : <p className="px-5 py-5 text-[11px] t-dim">Select any field above to check its evidence and confirm its value. * Required for export.</p>}
+          </>}
 
-                <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {result.extraction.fields.map((f) => {
-                    const r = review[f.key];
-                    const required = REQUIRED_FIELDS.includes(f.key);
-                    const isSel = selected === f.key;
-                    return (
-                      <button
-                        key={f.key}
-                        onClick={() => {
-                          setSelected(f.key);
-                          setEditing(false);
-                        }}
-                        className={`flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors ${
-                          isSel ? "bg-teal-soft/40 dark:bg-teal-900/30" : "hover:bg-slate-50 dark:hover:bg-slate-800/50"
-                        }`}
-                      >
-                        <div className="min-w-0">
-                          <div className="text-[11px] uppercase tracking-wide t-faint">
-                            {FIELD_LABELS[f.key]}
-                            {required && <span className="ml-1 text-danger">*</span>}
-                          </div>
-                          <div
-                            className={`truncate text-sm ${
-                              r?.currentValue ? "font-medium t-strong" : "italic t-faint"
-                            }`}
-                          >
-                            {r?.currentValue ?? "— not read —"}
-                          </div>
-                        </div>
-                        {statusBadge(f, r)}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Field action panel */}
-                {selected && selectedField && selectedReview && (
-                  <div className="sticky bottom-0 border-t bordered panel-muted p-4">
-                    <div className="text-xs font-semibold t-body">
-                      {FIELD_LABELS[selected]}
-                    </div>
-                    {selectedIssues.length > 0 && (
-                      <ul className="mt-1 space-y-1 text-xs text-amber dark:text-amber-400">
-                        {selectedIssues.map((i) => (
-                          <li key={i.id}>
-                            {i.message}
-                            {i.evidence?.length ? (
-                              <span className="block t-dim">
-                                {i.evidence.map((ev, idx) => (
-                                  <span key={idx} className="block">“{ev}”</span>
-                                ))}
-                              </span>
-                            ) : null}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {editing ? (
-                      <div className="mt-2 flex items-center gap-2">
-                        <input
-                          autoFocus
-                          value={editDraft}
-                          onChange={(e) => setEditDraft(e.target.value)}
-                          placeholder="Type the value exactly as seen on the fax"
-                          className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
-                          onKeyDown={(e) => e.key === "Enter" && saveCorrection()}
-                        />
-                        <button className="btn btn-primary" onClick={saveCorrection}>
-                          Save
-                        </button>
-                        <button className="btn btn-ghost" onClick={() => setEditing(false)}>
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="mt-2 flex items-center gap-2">
-                        <button className="btn btn-ghost" onClick={startEdit}>
-                          Edit
-                        </button>
-                        <button
-                          className="btn btn-primary"
-                          onClick={confirmField}
-                          disabled={!selectedReview.currentValue?.trim() || selectedReview.reviewed}
-                          title={
-                            !selectedReview.currentValue?.trim()
-                              ? "Enter a value first — nothing is inferred for you"
-                              : selectedReview.reviewed
-                                ? "Already confirmed"
-                                : "Confirm this value against the original"
-                          }
-                        >
-                          {selectedReview.reviewed ? "Confirmed ✓" : "Confirm from source"}
-                        </button>
-                        {voiceEnabled && selectedIssues.some((i) => i.severity === "CRITICAL") && (
-                          <button
-                            className="btn btn-ghost"
-                            onClick={() => void playVerificationCall()}
-                            disabled={voiceBusy}
-                            title="Generate the spoken script a tech would use to verify this field with the prescriber's office. Simulated — no call is placed."
-                          >
-                            {voiceBusy ? "Preparing…" : "▶ Verification call"}
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    {voiceNote && (
-                      <p className="mt-1.5 text-[11px] t-dim">{voiceNote}</p>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {/* Export footer */}
-          <div className="border-t bordered p-4">
-            <button
-              className="btn btn-primary w-full"
-              disabled={!gate.ok || phase !== "done"}
-              onClick={exportDraft}
-              title={gate.ok ? "Download draft JSON" : gate.blockers.slice(0, 3).join(" · ")}
-            >
-              Export draft JSON
-            </button>
-            {!gate.ok && phase === "done" && result?.status === "NEEDS_REVIEW" && (
-              <p className="mt-2 text-[11px] leading-snug t-dim">
-                Blocked: {gate.blockers.slice(0, 3).join(" · ")}
-                {gate.blockers.length > 3 ? ` · +${gate.blockers.length - 3} more` : ""}
-              </p>
-            )}
-            {exported && (
-              <p className="mt-2 text-[11px] font-medium text-teal dark:text-teal-300">
-                Draft exported for further verification. No prescription was transmitted.
-              </p>
-            )}
-            <button
-              className="mt-2 text-[11px] t-faint underline-offset-2 hover:underline"
-              onClick={() => setShowAudit((v) => !v)}
-            >
-              Review history ({audit.length})
-            </button>
-            {showAudit && (
-              <div className="mt-2 max-h-36 space-y-1 overflow-auto rounded border bordered panel-muted p-2 text-[11px] t-body">
-                {audit.length === 0 && <div>No events yet.</div>}
-                {audit.map((e) => (
-                  <div key={e.id}>
-                    <span className="font-mono t-faint">
-                      {new Date(e.at).toLocaleTimeString()}
-                    </span>{" "}
-                    <b>{e.actor === "SYSTEM" ? "system" : "pharmacist"}</b> {e.action.toLowerCase()}
-                    {e.field ? ` ${FIELD_LABELS[e.field]}` : ""}
-                    {e.before !== undefined || e.after !== undefined
-                      ? `: ${e.before ?? "∅"} → ${e.after ?? "∅"}`
-                      : e.reason
-                        ? ` — ${e.reason}`
-                        : ""}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+          <div className="review-export"><button className="btn btn-primary" disabled={!gate.ok || phase !== "done" || result?.status !== "NEEDS_REVIEW"} onClick={exportDraft}><Icon name="download" size={16} />{exportLocked ? requiredLeft > 0 ? `Confirm ${requiredLeft} more field${requiredLeft > 1 ? "s" : ""} to export` : "Resolve issues to export" : "Export draft JSON"}</button>{!gate.ok && phase === "done" && result?.status === "NEEDS_REVIEW" && <p>{gate.blockers.slice(0, 3).join(" · ")}{gate.blockers.length > 3 ? ` · +${gate.blockers.length - 3} more` : ""}</p>}{exported && <p className="!text-teal dark:!text-teal-300" role="status">Draft exported for further verification. No prescription was transmitted.</p>}<div className="save-bar"><button onClick={() => setShowAudit((v) => !v)} aria-expanded={showAudit}><Icon name="history" size={13} />Review history ({audit.length})</button><span role="status">{isUpload ? phase !== "done" ? "Kept in this tab only" : uploadKept ? "Saved in this tab" : "Could not save in this tab" : saveState === "loading" ? "Checking saved review…" : saveState === "saving" ? "Saving…" : saveState === "saved" ? "All changes saved" : saveState === "error" ? "Storage unavailable · not saved" : ""}</span></div>{showAudit && <div className="audit-list">{audit.length === 0 && <div>No review events yet.</div>}{audit.map((e) => <div key={e.id}><time>{new Date(e.at).toLocaleTimeString()}</time><b>{e.actor === "SYSTEM" ? "System" : "Reviewer"}</b> {e.action.toLowerCase().replaceAll("_", " ")}{e.field ? ` · ${FIELD_LABELS[e.field]}` : ""}{e.before !== undefined || e.after !== undefined ? `: ${e.before ?? "∅"} → ${e.after ?? "∅"}` : e.reason ? ` — ${e.reason}` : ""}</div>)}</div>}</div>
+        </section>
       </div>
     </div>
   );

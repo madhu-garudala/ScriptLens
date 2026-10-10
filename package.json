@@ -10,17 +10,22 @@
     "fixtures": "python3 scripts/generate_fixtures.py",
     "smoke:nicrron": "node scripts/smoke-nicrron.mjs",
     "smoke:prism": "node scripts/smoke-prism.mjs",
-    "smoke:elevenlabs": "node scripts/smoke-elevenlabs.mjs"
+    "smoke:elevenlabs": "node scripts/smoke-elevenlabs.mjs",
+    "db:setup": "node scripts/db-setup.mjs",
+    "samples": "cd scripts && python3 generate_samples.py",
+    "cache:warm": "node scripts/warm-cache.mjs"
   },
   "dependencies": {
     "next": "14.2.21",
     "openai": "^4.77.0",
+    "pg": "^8.23.1",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",
+    "@types/pg": "^8.23.1",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "autoprefixer": "^10.4.20",

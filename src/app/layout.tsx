@@ -1,54 +1,37 @@
 import type { Metadata } from "next";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import Link from "next/link";
+import { NavLinks } from "@/components/NavLinks";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { Icon } from "@/components/Icon";
 import "./globals.css";
+
+const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
+const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", display: "swap" });
 
 export const metadata: Metadata = {
   title: "ScriptLens — Evidence-First Prescription Intake",
-  description:
-    "Turns blurry synthetic prescription faxes into reviewable draft orders with visible evidence and human confirmation for every critical field.",
+  description: "Prescription intake with visible source evidence and human confirmation for every critical field.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${mono.variable}`}>
       <body>
-        <div className="flex min-h-screen">
-          <aside className="hidden w-56 shrink-0 flex-col bg-shell text-slate-300 lg:flex">
-            <div className="px-5 py-6">
-              <Link href="/" className="block">
-                <div className="text-lg font-bold text-white">
-                  Script<span className="text-teal-300">Lens</span>
-                </div>
-                <div className="mt-1 text-[11px] leading-snug text-slate-400">
-                  See the evidence behind every prescription.
-                </div>
-              </Link>
-            </div>
-            <nav className="flex-1 space-y-1 px-3 text-sm">
-              <Link
-                href="/"
-                className="block rounded-md px-3 py-2 font-medium text-white hover:bg-white/10"
-              >
-                Intake Queue
-              </Link>
-              <div className="px-3 py-2 text-slate-500">Reliability — in review panel</div>
-            </nav>
-            <div className="px-5 py-5 text-[10px] leading-relaxed text-slate-500">
-              Hackathon prototype.
-              <br />
-              Nothing here transmits, fills, or approves a prescription.
+        <a href="#main-content" className="skip-link">Skip to content</a>
+        <div className="app-shell">
+          <aside className="sidebar">
+            <Link href="/" className="brand" aria-label="ScriptLens home"><span className="brand-mark"><Icon name="lens" size={24} /></span><span>ScriptLens<span className="brand-caption">PRESCRIPTION INTAKE</span></span></Link>
+            <div className="nav-caption">WORKSPACE</div>
+            <NavLinks />
+            <div className="sidebar-bottom">
+              <div className="sidebar-note"><Icon name="shield" size={21} /><strong>Every detail. Verified.</strong><p>Source evidence and human review, at every step.</p></div>
+              <div className="reviewer"><span className="reviewer-avatar">DR</span><div>Demo reviewer<small>Prescription review</small></div><ThemeToggle /></div>
             </div>
           </aside>
-          <div className="flex min-w-0 flex-1 flex-col">
-            <header className="flex items-center justify-between gap-3 border-b bordered panel px-4 py-2.5 lg:px-6">
-              <div className="text-sm font-semibold t-body lg:hidden">ScriptLens</div>
-              <div className="text-xs t-dim">
-                Get Hired Hack · Track 4 · PillSpark — Fax to Fill
-              </div>
-              <div className="flex items-center gap-2"><span className="badge badge-missing">Synthetic data · demo only</span><ThemeToggle /></div>
-            </header>
-            <main className="min-w-0 flex-1">{children}</main>
+          <div className="main-shell">
+            <header className="topbar"><span>Workspace <span className="topbar-slash">/</span> <strong>Prescription intake</strong></span><span className="demo-label"><span /> Synthetic data only</span></header>
+            <main id="main-content" className="main-content">{children}</main>
           </div>
         </div>
       </body>
