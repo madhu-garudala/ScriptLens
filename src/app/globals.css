@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --shell: #101827;
+  --surface: #f8fafc;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-surface text-slate-900 dark:bg-slate-950 dark:text-slate-100;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.panel {
+  @apply bg-white dark:bg-slate-900;
+}
+.panel-muted {
+  @apply bg-slate-50 dark:bg-slate-900/60;
+}
+.bordered {
+  @apply border-slate-200 dark:border-slate-800;
+}
+.t-strong {
+  @apply text-slate-900 dark:text-slate-100;
+}
+.t-body {
+  @apply text-slate-700 dark:text-slate-300;
+}
+.t-dim {
+  @apply text-slate-500 dark:text-slate-400;
+}
+.t-faint {
+  @apply text-slate-400 dark:text-slate-500;
+}
+
+.badge {
+  @apply inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide;
+}
+.badge-ai {
+  @apply bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200;
+}
+.badge-review {
+  @apply bg-amber-soft text-amber dark:bg-amber-900/50 dark:text-amber-300;
+}
+.badge-confirmed {
+  @apply bg-teal-soft text-teal dark:bg-teal-900/50 dark:text-teal-300;
+}
+.badge-corrected {
+  @apply bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-300;
+}
+.badge-missing {
+  @apply bg-danger-soft text-danger dark:bg-red-900/50 dark:text-red-300;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40;
+}
+.btn-primary {
+  @apply bg-teal text-white hover:bg-teal/90;
+}
+.btn-ghost {
+  @apply border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700;
+}
+.btn-danger {
+  @apply bg-danger text-white hover:bg-danger/90;
+}
+
+.callout-amber {
+  @apply border-amber/30 bg-amber-soft dark:border-amber-500/30 dark:bg-amber-950/40;
+}
+.callout-danger {
+  @apply border-danger/30 bg-danger-soft dark:border-red-500/30 dark:bg-red-950/40;
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.pulse-soft {
+  animation: pulse-soft 1.4s ease-in-out infinite;
+}

@@ -1,0 +1,42 @@
+{
+  "_purpose": "Test oracle for synthetic fixtures. NEVER passed to inference.",
+  "fixtures": [
+    {
+      "id": "rx-clean",
+      "title": "Routine intake",
+      "image": "/fixtures/rx-clean.png",
+      "description": "All critical fields readable.",
+      "expected": {
+        "patient_name": "Avery Morgan",
+        "medication_name": "Lisinopril",
+        "strength": "10 mg",
+        "dose": "1 tablet",
+        "frequency": "once daily",
+        "prescriber_name": "Dr. Riley Chen"
+      },
+      "expectedCriticalUnknown": []
+    },
+    {
+      "id": "rx-ambiguous",
+      "title": "Unclear strength",
+      "image": "/fixtures/rx-ambiguous.png",
+      "description": "Strength digits destroyed by toner dropout — objectively unreadable.",
+      "expected": {
+        "patient_name": "Jordan Blake",
+        "medication_name": "Lisinopril"
+      },
+      "expectedCriticalUnknown": ["strength"]
+    },
+    {
+      "id": "rx-conflict",
+      "title": "Contradictory directions",
+      "image": "/fixtures/rx-conflict.png",
+      "description": "SIG says 1 tablet daily; margin note says take 2 tablets daily.",
+      "expected": {
+        "patient_name": "Sam Rivera",
+        "medication_name": "Atorvastatin"
+      },
+      "expectedCriticalIssues": ["frequency", "dose"]
+    }
+  ]
+}
